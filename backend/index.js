@@ -276,33 +276,33 @@ async function parseAssistantResponse(rawText, userId) {
     const programNames = rawNames.split(/\s*[\/|&]\s+|\s+and\s+/i).map((n) => n.trim()).filter(Boolean);
 
     for (const programName of programNames) {
-    const appRow = await pool.query(
-      `SELECT application_id, application_name, category, description, official_url
-       FROM applications WHERE application_name ILIKE $1`,
-      [programName]
-    );
-    if (appRow.rowCount > 0) {
-      const app = appRow.rows[0];
-      let alreadyApplied = false;
-      if (userId) {
-        const uaCheck = await pool.query(
-          `SELECT 1 FROM user_applications
-           WHERE user_id = $1 AND application_id = $2 AND status <> 'terminated'`,
-          [userId, app.application_id]
-        );
-        alreadyApplied = uaCheck.rowCount > 0;
+      const appRow = await pool.query(
+        `SELECT application_id, application_name, category, description, official_url
+         FROM applications WHERE application_name ILIKE $1`,
+        [programName]
+      );
+      if (appRow.rowCount > 0) {
+        const app = appRow.rows[0];
+        let alreadyApplied = false;
+        if (userId) {
+          const uaCheck = await pool.query(
+            `SELECT 1 FROM user_applications
+             WHERE user_id = $1 AND application_id = $2 AND status <> 'terminated'`,
+            [userId, app.application_id]
+          );
+          alreadyApplied = uaCheck.rowCount > 0;
+        }
+        actions.push({
+          type: "program_recommendation",
+          programName: app.application_name,
+          applicationId: app.application_id,
+          category: app.category,
+          description: app.description,
+          officialUrl: app.official_url,
+          alreadyApplied,
+        });
       }
-      actions.push({
-        type: "program_recommendation",
-        programName: app.application_name,
-        applicationId: app.application_id,
-        category: app.category,
-        description: app.description,
-        officialUrl: app.official_url,
-        alreadyApplied,
-      });
     }
-    } // end for programNames
   }
 
   const askRegex = /\*?\*?\[ASK:\s*([^\]]+)\]\*?\*?/g;
@@ -582,7 +582,7 @@ app.post("/api/clients/:clientId/sessions", async (req, res) => {
 
     const { rows } = await pool.query(
       `INSERT INTO chat_session (client_id, start_time, end_time, summary_generated, is_starred)
-       VALUES ($1, CURRENT_TIME, NULL, false, false)
+       VALUES ($1, CURRENT_TIMESTAMP, NULL, false, false)
        RETURNING session_id, client_id, start_time, end_time, summary_generated, is_starred`,
       [clientId]
     );
@@ -724,7 +724,7 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
 
     const { rows: userRows } = await pool.query(
       `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp")
-       VALUES ($1, $2, $3, CURRENT_TIME)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
        RETURNING message_id, session_id, sender_type, message_text, "timestamp"`,
       [sessionId, senderType, messageText.trim()]
     );
@@ -767,7 +767,7 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
     const actionsPayload = { actions, profilePrompts, applicationProgress };
     const { rows: assistantRows } = await pool.query(
       `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp", actions_json)
-       VALUES ($1, 'assistant', $2, CURRENT_TIME, $3)
+       VALUES ($1, 'assistant', $2, CURRENT_TIMESTAMP, $3)
        RETURNING message_id, session_id, sender_type, message_text, "timestamp", actions_json`,
       [sessionId, cleanText, JSON.stringify(actionsPayload)]
     );
@@ -844,7 +844,7 @@ app.post("/api/sessions/:sessionId/import", async (req, res) => {
       if (!msg.sender_type || !msg.message_text) continue;
       await pool.query(
         `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp")
-         VALUES ($1, $2, $3, CURRENT_TIME)`,
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
         [sessionId, msg.sender_type, String(msg.message_text)]
       );
     }
@@ -870,6 +870,11 @@ app.get("/api/clients/:clientId/profile", async (req, res) => {
          first_name AS "firstName",
          last_name AS "lastName",
          email,
+         phone,
+         date_of_birth AS "dateOfBirth",
+         city,
+         state,
+         zip_code AS "zipCode",
          household_size AS "householdSize",
          income,
          employment_status AS "employmentStatus",
