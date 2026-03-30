@@ -19,6 +19,7 @@ import PrivacyPage from "./pages/PrivacyPage";
 import TermsPage from "./pages/TermsPage";
 import AccessibilityPage from "./pages/AccessibilityPage";
 import ContactPage from "./pages/ContactPage";
+import BenefitsGuidePage from "./pages/BenefitsGuidePage";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -34,6 +35,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/accessibility" element={<AccessibilityPage />} />
             <Route path="/contact" element={<ContactPage />} />
+            <Route path="/benefits" element={<BenefitsGuidePage />} />
             <Route path="*" element={<NotFound />} />
           </Route>
 
