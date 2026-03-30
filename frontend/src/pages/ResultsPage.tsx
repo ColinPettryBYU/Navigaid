@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { ArrowLeft, Send, Star, Trash2 } from "lucide-react";
+import { ArrowLeft, Send, Star, Trash2, ExternalLink } from "lucide-react";
+import { useHideFooter } from "@/components/layout/DashboardLayout";
 import ReactMarkdown from "react-markdown";
 import {
   AlertDialog,
@@ -21,6 +22,10 @@ import {
   appendGuestMessages,
   deleteGuestConversation,
 } from "@/utils/guestChat";
+import ProgramCard, { type ProgramAction } from "@/components/chat/ProgramCard";
+import ProfilePrompt, { type ProfilePromptData } from "@/components/chat/ProfilePrompt";
+import QuickReplies from "@/components/chat/QuickReplies";
+import StepProgress, { type ApplicationProgress } from "@/components/chat/StepProgress";
 
 interface Message {
   id: string;
@@ -32,11 +37,19 @@ interface ApiMessage {
   message_id: number;
   sender_type: "user" | "assistant";
   message_text: string;
+  actions_json?: {
+    actions?: ProgramAction[];
+    profilePrompts?: ProfilePromptData[];
+    applicationProgress?: ApplicationProgress[];
+  } | null;
 }
 
 interface SendMessageResponse {
   userMessage: ApiMessage;
   assistantMessage: ApiMessage | null;
+  actions?: ProgramAction[];
+  profilePrompts?: ProfilePromptData[];
+  applicationProgress?: ApplicationProgress[];
 }
 
 interface ApiSession {
@@ -74,6 +87,7 @@ const ResultsPage = () => {
   const [input, setInput] = useState("");
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [isBootstrappingThread, setIsBootstrappingThread] = useState(!!initialMessage);
   const [error, setError] = useState("");
   const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
@@ -98,6 +112,11 @@ const ResultsPage = () => {
   const [selectedGuestId, setSelectedGuestId] = useState<string | null>(null);
   const [guestPendingDelete, setGuestPendingDelete] = useState<GuestConversation | null>(null);
 
+  // ─── Structured response state ────────────────────────────────────
+  const [messageActions, setMessageActions] = useState<Record<string, ProgramAction[]>>({});
+  const [messagePrompts, setMessagePrompts] = useState<Record<string, ProfilePromptData[]>>({});
+  const [messageProgress, setMessageProgress] = useState<Record<string, ApplicationProgress[]>>({});
+
   // Derived
   const selectedSession = sessions.find((s) => s.session_id === selectedSessionId) ?? null;
   const starredSessions = sessions.filter((s) => s.is_starred);
@@ -105,6 +124,13 @@ const ResultsPage = () => {
   const isInChatView = isAuthenticated
     ? selectedSessionId !== null || isBootstrappingThread
     : selectedGuestId !== null || isBootstrappingThread;
+
+  // Hide footer when inside an active chat
+  const setHideFooter = useHideFooter();
+  useEffect(() => {
+    setHideFooter(isInChatView);
+    return () => setHideFooter(false);
+  }, [isInChatView, setHideFooter]);
 
   // ─── Auth helpers ────────────────────────────────────────────────────
   const loadSessions = useCallback(async () => {
@@ -135,6 +161,23 @@ const ResultsPage = () => {
       const data = (await response.json()) as ApiMessage[];
       const mapped = data.map(mapApiMessage);
       setMessages(mapped);
+
+      // Restore structured action cards from saved actions_json
+      const newActions: Record<string, ProgramAction[]> = {};
+      const newPrompts: Record<string, ProfilePromptData[]> = {};
+      const newProgress: Record<string, ApplicationProgress[]> = {};
+      for (const msg of data) {
+        if (msg.sender_type === "assistant" && msg.actions_json) {
+          const id = String(msg.message_id);
+          if (msg.actions_json.actions?.length) newActions[id] = msg.actions_json.actions;
+          if (msg.actions_json.profilePrompts?.length) newPrompts[id] = msg.actions_json.profilePrompts;
+          if (msg.actions_json.applicationProgress?.length) newProgress[id] = msg.actions_json.applicationProgress;
+        }
+      }
+      setMessageActions(newActions);
+      setMessagePrompts(newPrompts);
+      setMessageProgress(newProgress);
+
       return mapped;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load chat history.");
@@ -205,7 +248,7 @@ const ResultsPage = () => {
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (container) container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-  }, [messages.length, typingDisplayLength]);
+  }, [messages.length, typingDisplayLength, typingMessageId, isThinking]);
 
   // Typing animation
   useEffect(() => {
@@ -238,10 +281,23 @@ const ResultsPage = () => {
             body: JSON.stringify({ messageText: initialMessage.trim(), senderType: "user" }),
           });
           if (!response.ok) throw new Error("Unable to save first message.");
+          const respData = (await response.json()) as SendMessageResponse;
           await loadSessions();
           const loaded = await loadMessages(newSession.session_id);
           const lastAssistant = [...loaded].reverse().find((m) => m.role === "assistant");
-          if (lastAssistant) { setTypingDisplayLength(0); setTypingMessageId(lastAssistant.id); }
+          if (lastAssistant) {
+            setTypingDisplayLength(0);
+            setTypingMessageId(lastAssistant.id);
+            if (respData.actions && respData.actions.length > 0) {
+              setMessageActions((prev) => ({ ...prev, [lastAssistant.id]: respData.actions! }));
+            }
+            if (respData.profilePrompts && respData.profilePrompts.length > 0) {
+              setMessagePrompts((prev) => ({ ...prev, [lastAssistant.id]: respData.profilePrompts! }));
+            }
+            if (respData.applicationProgress && respData.applicationProgress.length > 0) {
+              setMessageProgress((prev) => ({ ...prev, [lastAssistant.id]: respData.applicationProgress! }));
+            }
+          }
         } else {
           // ── Guest bootstrap ─────────────────────────────────────────
           const conv = createGuestConversation();
@@ -257,11 +313,17 @@ const ResultsPage = () => {
             body: JSON.stringify({ messageText: initialMessage.trim(), conversationHistory: [] }),
           });
           if (!res.ok) throw new Error("Unable to get AI response.");
-          const data = await res.json() as { assistantMessage: string };
+          const data = await res.json() as { assistantMessage: string; actions?: ProgramAction[]; profilePrompts?: ProfilePromptData[] };
           const aiMsg: GuestMessage = { id: `g-${Date.now()}-ai`, role: "assistant", content: data.assistantMessage };
           setMessages((prev) => [...prev, { ...aiMsg }]);
           setTypingDisplayLength(0);
           setTypingMessageId(aiMsg.id);
+          if (data.actions && data.actions.length > 0) {
+            setMessageActions((prev) => ({ ...prev, [aiMsg.id]: data.actions! }));
+          }
+          if (data.profilePrompts && data.profilePrompts.length > 0) {
+            setMessagePrompts((prev) => ({ ...prev, [aiMsg.id]: data.profilePrompts! }));
+          }
           appendGuestMessages(conv.id, [aiMsg]);
           refreshGuestConversations();
         }
@@ -284,6 +346,14 @@ const ResultsPage = () => {
 
     if (isAuthenticated) {
       // ── Auth send ─────────────────────────────────────────────────
+
+      // Optimistically show the user's message immediately
+      const optimisticUserMsg: Message = { id: `optimistic-${Date.now()}`, role: "user", content: text.trim() };
+      setMessages((prev) => [...prev, optimisticUserMsg]);
+      setInput("");
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      setIsThinking(true);
+
       try {
         let sessionId = selectedSessionId;
         if (!sessionId) {
@@ -298,20 +368,39 @@ const ResultsPage = () => {
         });
         if (!response.ok) throw new Error("Unable to save message.");
         const data = (await response.json()) as SendMessageResponse;
-        const newMessages: Message[] = [mapApiMessage(data.userMessage)];
+
+        // Replace optimistic message with real one, then add assistant message
+        const realUserMsg = mapApiMessage(data.userMessage);
+        setMessages((prev) => {
+          const without = prev.filter((m) => m.id !== optimisticUserMsg.id);
+          const next = [...without, realUserMsg];
+          if (data.assistantMessage) next.push(mapApiMessage(data.assistantMessage));
+          return next;
+        });
+
         if (data.assistantMessage) {
           const mapped = mapApiMessage(data.assistantMessage);
-          newMessages.push(mapped);
           setTypingDisplayLength(0);
           setTypingMessageId(mapped.id);
+          if (data.actions && data.actions.length > 0) {
+            setMessageActions((prev) => ({ ...prev, [mapped.id]: data.actions! }));
+          }
+          if (data.profilePrompts && data.profilePrompts.length > 0) {
+            setMessagePrompts((prev) => ({ ...prev, [mapped.id]: data.profilePrompts! }));
+          }
+          if (data.applicationProgress && data.applicationProgress.length > 0) {
+            setMessageProgress((prev) => ({ ...prev, [mapped.id]: data.applicationProgress! }));
+          }
         }
-        setMessages((prev) => [...prev, ...newMessages]);
-        setInput("");
-        if (textareaRef.current) textareaRef.current.style.height = "auto";
+
         await loadSessions();
       } catch (err) {
+        // Remove the optimistic message on error
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticUserMsg.id));
+        setInput(text);
         setError(err instanceof Error ? err.message : "Unable to save message.");
       } finally {
+        setIsThinking(false);
         setIsSending(false);
       }
     } else {
@@ -328,6 +417,7 @@ const ResultsPage = () => {
         setMessages((prev) => [...prev, { ...userMsg }]);
         setInput("");
         if (textareaRef.current) textareaRef.current.style.height = "auto";
+        setIsThinking(true);
         appendGuestMessages(guestId, [userMsg]);
         refreshGuestConversations();
 
@@ -338,16 +428,23 @@ const ResultsPage = () => {
           body: JSON.stringify({ messageText: text.trim(), conversationHistory: history }),
         });
         if (!res.ok) throw new Error("Unable to get AI response.");
-        const data = await res.json() as { assistantMessage: string };
+        const data = await res.json() as { assistantMessage: string; actions?: ProgramAction[]; profilePrompts?: ProfilePromptData[] };
         const aiMsg: GuestMessage = { id: `g-${Date.now()}-ai`, role: "assistant", content: data.assistantMessage };
         setMessages((prev) => [...prev, { ...aiMsg }]);
         setTypingDisplayLength(0);
         setTypingMessageId(aiMsg.id);
+        if (data.actions && data.actions.length > 0) {
+          setMessageActions((prev) => ({ ...prev, [aiMsg.id]: data.actions! }));
+        }
+        if (data.profilePrompts && data.profilePrompts.length > 0) {
+          setMessagePrompts((prev) => ({ ...prev, [aiMsg.id]: data.profilePrompts! }));
+        }
         appendGuestMessages(guestId, [aiMsg]);
         refreshGuestConversations();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to get AI response.");
       } finally {
+        setIsThinking(false);
         setIsSending(false);
       }
     }
@@ -420,6 +517,19 @@ const ResultsPage = () => {
     setGuestPendingDelete(null);
   };
 
+  // ─── Quick reply derivation ────────────────────────────────────────
+  const deriveQuickReplies = (): string[] => {
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return [];
+    const actions = messageActions[last.id];
+    const prompts = messagePrompts[last.id];
+    if (prompts && prompts.length > 0) return [];
+    if (actions && actions.length > 0) {
+      return ["Tell me more", "What else am I eligible for?", "Show my applications"];
+    }
+    return ["What programs am I eligible for?", "Help me with housing", "Tell me more"];
+  };
+
   // ─── Shared chat message renderer ───────────────────────────────────
   const renderMessages = () => (
     <>
@@ -433,72 +543,148 @@ const ResultsPage = () => {
       )}
 
       {!isLoadingMessages && !isBootstrappingThread && messages.length === 0 && (
-        <div className="text-center py-16">
+        <div className="text-center py-12">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-secondary-container mb-5">
             <span className="material-symbols-outlined text-3xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
-              chat
+              smart_toy
             </span>
           </div>
-          <p className="text-lg font-bold font-headline text-on-surface mb-1">Ready to help</p>
-          <p className="text-sm text-on-surface-variant max-w-xs mx-auto">
-            Ask about aid programs, eligibility, or how to apply — NavigAid AI is here to guide you.
+          <p className="text-lg font-bold font-headline text-on-surface mb-1">Hi, I'm NavigAid</p>
+          <p className="text-sm text-on-surface-variant max-w-sm mx-auto mb-6">
+            {isAuthenticated
+              ? "I know your profile and can recommend programs you may qualify for. Describe your situation or try one of these:"
+              : "I can help you explore government aid programs. Describe your situation or try one of these:"}
           </p>
+          <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
+            {[
+              "What programs am I eligible for?",
+              "I need help with housing",
+              "I lost my job recently",
+              "Help me with food assistance",
+            ].map((chip) => (
+              <button
+                key={chip}
+                onClick={() => sendMessage(chip)}
+                className="px-4 py-2 rounded-full text-sm font-medium border border-primary/20 text-primary bg-[var(--surface-container-lowest)] hover:bg-primary/5 transition-all active:scale-95"
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
-      {messages.map((msg) => {
+      {messages.map((msg, msgIdx) => {
         const isTyping = msg.id === typingMessageId;
         const displayContent = isTyping ? msg.content.substring(0, typingDisplayLength) : msg.content;
+        const isLastAssistant = msg.role === "assistant" && msgIdx === messages.length - 1;
+        const actions = messageActions[msg.id];
+        const prompts = messagePrompts[msg.id];
+        const progress = messageProgress[msg.id];
 
         return (
-          <div
-            key={msg.id}
-            className={`flex gap-3 max-w-[80%] ${msg.role === "user" ? "ml-auto flex-row-reverse" : ""}`}
-          >
-            {msg.role === "assistant" && (
-              <div className="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center shrink-0 mt-1">
-                <span className="material-symbols-outlined text-primary text-lg">smart_toy</span>
-              </div>
-            )}
-            {msg.role === "user" && (
-              <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-1">
-                <span className="material-symbols-outlined text-primary text-lg">person</span>
-              </div>
-            )}
-            <div
-              className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-primary text-[var(--on-primary)] rounded-br-md whitespace-pre-wrap"
-                  : "bg-[var(--surface-container-lowest)] border border-[var(--outline-variant)]/20 rounded-bl-md shadow-sm"
-              }`}
-            >
-              {msg.role === "user" ? (
-                displayContent
-              ) : (
-                <ReactMarkdown
-                  components={{
-                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                    strong: ({ children }) => <strong className="font-bold">{children}</strong>,
-                    ul: ({ children }) => <ul className="list-disc list-inside mb-2">{children}</ul>,
-                    ol: ({ children }) => <ol className="list-decimal list-inside mb-2">{children}</ol>,
-                    li: ({ children }) => <li className="mb-1">{children}</li>,
-                  }}
-                >
-                  {displayContent}
-                </ReactMarkdown>
+          <div key={msg.id}>
+            <div className={`flex gap-3 max-w-[80%] ${msg.role === "user" ? "ml-auto flex-row-reverse" : ""}`}>
+              {msg.role === "assistant" && (
+                <div className="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center shrink-0 mt-1">
+                  <span className="material-symbols-outlined text-primary text-lg">smart_toy</span>
+                </div>
               )}
+              {msg.role === "user" && (
+                <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-1">
+                  <span className="material-symbols-outlined text-primary text-lg">person</span>
+                </div>
+              )}
+              <div
+                className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  msg.role === "user"
+                    ? "bg-primary text-[var(--on-primary)] rounded-br-md whitespace-pre-wrap"
+                    : "bg-[var(--surface-container-lowest)] border border-[var(--outline-variant)]/20 rounded-bl-md shadow-sm"
+                }`}
+              >
+                {msg.role === "user" ? (
+                  displayContent
+                ) : (
+                  <ReactMarkdown
+                    components={{
+                      p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                      strong: ({ children }) => <strong className="font-bold text-on-surface">{children}</strong>,
+                      ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-0.5">{children}</ul>,
+                      ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-0.5">{children}</ol>,
+                      li: ({ children }) => <li className="mb-1">{children}</li>,
+                      h3: ({ children }) => <h3 className="text-base font-bold font-headline text-on-surface mt-3 mb-1">{children}</h3>,
+                      h4: ({ children }) => <h4 className="text-sm font-bold font-headline text-on-surface mt-2 mb-1">{children}</h4>,
+                      a: ({ href, children }) => (
+                        <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary font-medium hover:underline inline-flex items-center gap-1">
+                          {children}<ExternalLink className="w-3 h-3 inline" />
+                        </a>
+                      ),
+                      blockquote: ({ children }) => (
+                        <blockquote className="border-l-3 border-primary/30 bg-primary-container/10 rounded-r-lg pl-3 pr-2 py-2 my-2 text-xs italic">
+                          {children}
+                        </blockquote>
+                      ),
+                      hr: () => <hr className="my-3 border-[var(--outline-variant)]/20" />,
+                      code: ({ children }) => (
+                        <code className="text-xs bg-[var(--surface-container)] rounded px-1.5 py-0.5 font-mono">{children}</code>
+                      ),
+                    }}
+                  >
+                    {displayContent}
+                  </ReactMarkdown>
+                )}
+              </div>
             </div>
+
+            {msg.role === "assistant" && !isTyping && (
+              <div className="ml-12">
+                {actions?.map((action, i) => (
+                  <ProgramCard key={i} action={action} onLearnMore={(text) => sendMessage(text)} />
+                ))}
+                {progress?.map((prog, i) => (
+                  <StepProgress key={i} progress={prog} />
+                ))}
+                {isLastAssistant && prompts?.map((p, i) => (
+                  <ProfilePrompt key={i} prompt={p} onAnswered={(text) => sendMessage(text)} />
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
+
+      {messages.length > 0 && messages[messages.length - 1]?.role === "assistant" && !typingMessageId && !isThinking && (
+        <QuickReplies
+          replies={deriveQuickReplies()}
+          onSelect={(text) => sendMessage(text)}
+          disabled={isSending}
+        />
+      )}
+
+      {isThinking && (
+        <div className="flex gap-3">
+          <div className="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center shrink-0 mt-1">
+            <span className="material-symbols-outlined text-primary text-lg">smart_toy</span>
+          </div>
+          <div className="rounded-2xl rounded-bl-md px-5 py-3.5 bg-[var(--surface-container-lowest)] border border-[var(--outline-variant)]/20 shadow-sm flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-primary animate-[pulse_1.4s_ease-in-out_infinite]" />
+            <span className="w-2 h-2 rounded-full bg-primary animate-[pulse_1.4s_ease-in-out_0.2s_infinite]" />
+            <span className="w-2 h-2 rounded-full bg-primary animate-[pulse_1.4s_ease-in-out_0.4s_infinite]" />
+          </div>
+        </div>
+      )}
+
       <div ref={bottomRef} />
     </>
   );
 
   // ─── Shared chat input ───────────────────────────────────────────────
   const renderInput = () => (
-    <div className="pt-4 mt-4 border-t border-[var(--outline-variant)]/20">
-      <div className="flex gap-3 items-end editorial-shadow p-2 bg-[var(--surface-container-lowest)] rounded-2xl">
+    <div className="shrink-0 px-2 pb-4 pt-2">
+      <div className="max-w-3xl mx-auto editorial-shadow p-2 bg-[var(--surface-container-lowest)] rounded-full flex items-center group transition-all duration-300 focus-within:ring-4 focus-within:ring-primary-container/20">
+        <div className="pl-4 text-primary flex items-center shrink-0">
+          <span className="material-symbols-outlined text-xl">chat</span>
+        </div>
         <textarea
           ref={textareaRef}
           value={input}
@@ -506,21 +692,21 @@ const ResultsPage = () => {
           onInput={handleTextareaInput}
           onKeyDown={handleKeyDown}
           placeholder="Type a follow-up question..."
-          className="flex-1 resize-none border-0 bg-transparent text-sm text-on-surface placeholder:text-[var(--outline-variant)] focus:outline-none focus:ring-0 min-h-[36px] max-h-[160px] py-2.5 px-4 font-body overflow-y-auto"
+          className="flex-1 resize-none border-0 bg-transparent text-on-surface placeholder:text-[var(--outline-variant)] focus:outline-none focus:ring-0 min-h-[44px] max-h-[120px] py-3 px-4 font-body text-sm overflow-y-auto"
           rows={1}
           maxLength={2000}
         />
         <button
           onClick={handleSend}
           disabled={!input.trim() || isSending || isLoadingMessages || isBootstrappingThread}
-          className="h-10 w-10 rounded-full bg-primary text-[var(--on-primary)] flex items-center justify-center shrink-0 hover:bg-primary-dim transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-primary/20 mb-0.5"
+          className="bg-primary hover:bg-primary-dim text-[var(--on-primary)] px-5 py-3 rounded-full font-headline font-bold text-sm transition-all duration-300 active:scale-[0.98] shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap mr-0.5"
           aria-label="Send message"
         >
           <Send className="w-4 h-4" />
         </button>
       </div>
       {input.length > 1800 && (
-        <p className="text-xs text-on-surface-variant/60 text-right mt-1 pr-1">
+        <p className="text-xs text-on-surface-variant/60 text-right mt-1 pr-4 max-w-3xl mx-auto">
           {input.length}/2000
         </p>
       )}
@@ -536,75 +722,105 @@ const ResultsPage = () => {
         : "New Chat";
 
     return (
-      <div className="flex flex-col h-[calc(100vh-12rem)]">
-        {/* Guest save banner */}
-        {!isAuthenticated && (
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-secondary-container/50 border border-primary/10 rounded-2xl px-4 py-3 mb-4">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-primary text-lg shrink-0">info</span>
-              <p className="text-sm text-on-surface font-medium">
-                Create a free account to save this conversation.
-              </p>
-            </div>
-            <button
-              onClick={() => navigate("/signup")}
-              className="shrink-0 px-4 py-1.5 rounded-full bg-primary text-[var(--on-primary)] font-bold text-sm hover:bg-primary-dim transition-all"
-            >
-              Sign Up Free
-            </button>
-          </div>
-        )}
-
-        {/* Chat Header */}
-        <div className="pb-4 mb-4 border-b border-[var(--outline-variant)]/20 flex items-center gap-2 sm:gap-4">
+      <div className="-mt-8 md:-mt-12 -mb-8 md:-mb-12 flex h-[calc(100vh-5rem)] overflow-hidden">
+        {/* Left sidebar panel */}
+        <div className="hidden md:flex flex-col items-center gap-3 w-12 shrink-0 pt-3 border-r border-[var(--outline-variant)]/15">
           <button
             onClick={resetConversationView}
-            className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center hover:bg-[var(--surface-container)] transition-colors shrink-0"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-[var(--surface-container)] transition-colors"
             aria-label="Back to conversations"
+            title="Back"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-4 h-4" />
           </button>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-base sm:text-xl font-bold font-headline text-on-surface truncate">
-              {chatTitle}
-            </h3>
-            <p className="text-xs sm:text-sm text-on-surface-variant">
-              {isAuthenticated ? "Saved chat thread" : "Guest session — not saved"}
-            </p>
-          </div>
           {isAuthenticated && selectedSession && (
-            <div className="flex items-center gap-2">
+            <>
               <button
                 type="button"
-                className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
                   selectedSession.is_starred ? "text-amber-500 hover:bg-amber-50" : "text-slate-400 hover:bg-slate-100"
                 }`}
                 disabled={isSessionActionPending(selectedSession.session_id)}
                 onClick={() => void handleToggleStar(selectedSession)}
-                aria-label={selectedSession.is_starred ? "Unstar conversation" : "Star conversation"}
+                aria-label={selectedSession.is_starred ? "Unstar" : "Star"}
+                title={selectedSession.is_starred ? "Unstar" : "Star"}
               >
-                <Star className={`h-5 w-5 ${selectedSession.is_starred ? "fill-current" : ""}`} />
+                <Star className={`h-4 w-4 ${selectedSession.is_starred ? "fill-current" : ""}`} />
               </button>
               <button
                 type="button"
-                className="w-10 h-10 rounded-full flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
+                className="w-9 h-9 rounded-full flex items-center justify-center text-slate-400 hover:bg-red-50 hover:text-red-500 transition-colors"
                 disabled={isSessionActionPending(selectedSession.session_id)}
                 onClick={() => setSessionPendingDelete(selectedSession)}
-                aria-label="Delete conversation"
+                aria-label="Delete"
+                title="Delete"
               >
-                <Trash2 className="h-5 w-5" />
+                <Trash2 className="h-4 w-4" />
               </button>
-            </div>
+            </>
           )}
         </div>
 
-        {/* Messages */}
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto space-y-4 pr-2">
-          {error && <p className="text-sm text-error font-medium">{error}</p>}
-          {renderMessages()}
-        </div>
+        {/* Chat area — full height, no top header */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Mobile-only compact header (no room for sidebar on small screens) */}
+          <div className="md:hidden shrink-0 flex items-center gap-2 py-2 px-1 border-b border-[var(--outline-variant)]/15">
+            <button
+              onClick={resetConversationView}
+              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[var(--surface-container)] transition-colors shrink-0"
+              aria-label="Back"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <h3 className="text-sm font-bold font-headline text-on-surface truncate flex-1">{chatTitle}</h3>
+            {isAuthenticated && selectedSession && (
+              <>
+                <button
+                  type="button"
+                  className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${
+                    selectedSession.is_starred ? "text-amber-500" : "text-slate-400"
+                  }`}
+                  disabled={isSessionActionPending(selectedSession.session_id)}
+                  onClick={() => void handleToggleStar(selectedSession)}
+                >
+                  <Star className={`h-4 w-4 ${selectedSession.is_starred ? "fill-current" : ""}`} />
+                </button>
+                <button
+                  type="button"
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 transition-colors"
+                  disabled={isSessionActionPending(selectedSession.session_id)}
+                  onClick={() => setSessionPendingDelete(selectedSession)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </>
+            )}
+          </div>
 
-        {renderInput()}
+          {/* Guest save banner */}
+          {!isAuthenticated && (
+            <div className="shrink-0 flex items-center justify-between gap-3 bg-secondary-container/50 border border-primary/10 rounded-xl px-3 py-2 mx-2 mt-2">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary text-sm shrink-0">info</span>
+                <p className="text-xs text-on-surface font-medium">Create an account to save conversations.</p>
+              </div>
+              <button
+                onClick={() => navigate("/signup")}
+                className="shrink-0 px-3 py-1 rounded-full bg-primary text-[var(--on-primary)] font-bold text-xs hover:bg-primary-dim transition-all"
+              >
+                Sign Up
+              </button>
+            </div>
+          )}
+
+          {/* Messages */}
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto space-y-4 px-3 pt-3 pb-1">
+            {error && <p className="text-sm text-error font-medium">{error}</p>}
+            {renderMessages()}
+          </div>
+
+          {renderInput()}
+        </div>
 
         {/* Auth delete dialog */}
         <AlertDialog
@@ -766,19 +982,17 @@ const ResultsPage = () => {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 sm:gap-3 mb-1">
-                          <h3 className="text-base sm:text-xl font-bold font-headline text-on-surface">
-                            Conversation #{session.session_id}
+                          <h3 className="text-base sm:text-xl font-bold font-headline text-on-surface line-clamp-2">
+                            {session.last_message_text
+                              ? session.last_message_text.replace(/\[.*?\]/g, "").trim().substring(0, 120) +
+                                (session.last_message_text.length > 120 ? "…" : "")
+                              : `Conversation #${session.session_id}`}
                           </h3>
                           {session.is_starred && (
                             <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] sm:text-xs font-bold uppercase tracking-wider">
                               Starred
                             </span>
                           )}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs sm:text-sm text-on-surface-variant">
-                          <span className="line-clamp-1 hidden sm:inline">
-                            {session.last_message_text ?? "No messages yet"}
-                          </span>
                         </div>
                         <p className="text-xs text-on-surface-variant mt-1">{session.message_count} messages</p>
                       </div>

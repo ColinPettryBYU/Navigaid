@@ -9,14 +9,46 @@ const app = express();
 const PORT = process.env.PORT ?? 3001;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+const SYSTEM_PROMPT = [
+  "You are NavigAid, a professional government benefits guidance assistant. You help users discover, understand, and apply for government aid programs they may qualify for.",
+  "",
+  "BEHAVIOR RULES:",
+  "- Reference the user's profile fields by name when making recommendations (e.g., 'Based on your household size of 3…').",
+  "- Never invent eligibility criteria. Only reference programs from the AVAILABLE PROGRAMS list provided in context.",
+  "- Recommend 1–2 programs at a time with clear rationale tied to the user's profile.",
+  "- If the user's profile is missing critical eligibility fields, ask about the most important missing field before making recommendations.",
+  "- When discussing a specific application the user has started, walk them through one step at a time and reference required documents.",
+  "",
+  "FORMATTING RULES:",
+  "- Use markdown: **bold** for program names and key terms, bullet lists for steps, numbered lists for processes.",
+  "- Keep paragraphs short (2–3 sentences max).",
+  "- Always end eligibility guidance with: 'Please confirm details on the official program website.'",
+  "",
+  "RECOMMENDATION FORMAT:",
+  "When recommending programs, use ONE marker per program, each on its own line. NEVER combine multiple programs into one marker.",
+  "**[RECOMMEND: Program Name]**",
+  "Then explain why the user may qualify in 1–2 sentences. Use the exact program name from the catalog.",
+  "CORRECT: two programs → two separate markers, each on their own line.",
+  "WRONG: **[RECOMMEND: LIHEAP / Weatherization]** — never use slashes or combine names.",
+  "",
+  "PROFILE QUESTION FORMAT:",
+  "When you need to ask about a missing profile field, include this marker on its own line:",
+  "**[ASK: field_name]**",
+  "Valid field_name values: employment_status, housing_status, disability_status, veteran_status, household_size, income",
+  "Then ask the question naturally in a follow-up sentence.",
+  "",
+  "ONBOARDING:",
+  "- If the conversation just started and the user's profile has missing fields, acknowledge what you know, then ask about the most important missing field.",
+  "- If the profile is fairly complete, summarize the top 1–2 programs they likely qualify for.",
+  "- For guest users with no profile, help them explore programs generally and suggest creating an account for personalized recommendations.",
+  "",
+  "IMPORTANT: You are not a lawyer or financial advisor. This is general guidance only.",
+].join("\n");
+
 const geminiModel = genAI.getGenerativeModel({
   model: "gemini-2.5-flash",
-  systemInstruction:
-    "You are HousingAid, a helpful assistant for finding government aid programs, " +
-    "especially housing assistance. Provide clear, empathetic, and actionable guidance " +
-    "about eligibility requirements, application processes, and available resources. " +
-    "Keep responses concise but thorough. If you are unsure about specific details, " +
-    "recommend the user contact their local housing authority or 211 helpline.",
+  systemInstruction: SYSTEM_PROMPT,
 });
 
 app.use(cors());
@@ -114,6 +146,210 @@ function mapUserApplicationRow(r) {
     steps,
     stepsCompleted,
   };
+}
+
+const PROFILE_FIELD_CONFIG = {
+  employment_status: {
+    label: "Employment Status",
+    type: "select",
+    options: ["Employed full-time", "Part-time", "Self-employed", "Unemployed", "Student", "Retired", "Unable to work"],
+  },
+  housing_status: {
+    label: "Housing Status",
+    type: "select",
+    options: ["Homeowner", "Renter", "Homeless / Unhoused", "Temporary shelter", "Living with family or friends"],
+  },
+  disability_status: {
+    label: "Disability Status",
+    type: "select",
+    options: ["No disability reported", "Physical disability", "Mental health disability", "Multiple disabilities"],
+  },
+  veteran_status: {
+    label: "Veteran Status",
+    type: "select",
+    options: ["Not a veteran", "Active duty", "Veteran", "Disabled veteran"],
+  },
+  household_size: { label: "Household Size", type: "number", options: [] },
+  income: { label: "Annual Income", type: "number", options: [] },
+};
+
+async function buildUserContext(userId) {
+  const profileResult = await pool.query(
+    `SELECT first_name, last_name, email, phone, date_of_birth, city, state, zip_code,
+            household_size, income, employment_status, housing_status,
+            disability_status, veteran_status
+     FROM users WHERE user_id = $1`,
+    [userId]
+  );
+  if (profileResult.rowCount === 0) return null;
+  const p = profileResult.rows[0];
+
+  const missingFields = [];
+  if (!p.household_size) missingFields.push("household_size");
+  if (p.income == null) missingFields.push("income");
+  if (!p.employment_status) missingFields.push("employment_status");
+  if (!p.housing_status) missingFields.push("housing_status");
+  if (!p.disability_status) missingFields.push("disability_status");
+  if (!p.veteran_status) missingFields.push("veteran_status");
+
+  const userAppsResult = await pool.query(
+    `SELECT ua.status, ua.steps_completed,
+            a.application_name, a.application_steps
+     FROM user_applications ua
+     JOIN applications a ON a.application_id = ua.application_id
+     WHERE ua.user_id = $1 AND ua.status <> 'terminated'
+     ORDER BY ua.last_updated DESC`,
+    [userId]
+  );
+
+  const catalogResult = await pool.query(
+    "SELECT application_name, category, qualification_summary FROM applications ORDER BY application_name"
+  );
+
+  const docsResult = await pool.query(
+    `SELECT a.application_name, rd.document_name, rd.required_flag
+     FROM required_documents rd
+     JOIN applications a ON a.application_id = rd.application_id
+     JOIN user_applications ua ON ua.application_id = a.application_id
+     WHERE ua.user_id = $1 AND ua.status <> 'terminated'
+     ORDER BY a.application_name, rd.required_flag DESC`,
+    [userId]
+  );
+
+  let ctx = "=== USER PROFILE ===\n";
+  ctx += `Name: ${p.first_name} ${p.last_name}\n`;
+  if (p.household_size) ctx += `Household size: ${p.household_size}\n`;
+  if (p.income != null) ctx += `Annual income: $${Number(p.income).toLocaleString()}\n`;
+  if (p.employment_status) ctx += `Employment: ${p.employment_status}\n`;
+  if (p.housing_status) ctx += `Housing: ${p.housing_status}\n`;
+  if (p.disability_status) ctx += `Disability: ${p.disability_status}\n`;
+  if (p.veteran_status) ctx += `Veteran: ${p.veteran_status}\n`;
+  if (p.city || p.state) ctx += `Location: ${[p.city, p.state].filter(Boolean).join(", ")}\n`;
+  if (missingFields.length > 0) ctx += `Missing profile fields: ${missingFields.join(", ")}\n`;
+
+  if (userAppsResult.rows.length > 0) {
+    ctx += "\n=== USER'S CURRENT APPLICATIONS ===\n";
+    for (const app of userAppsResult.rows) {
+      const steps = parseApplicationSteps(app.application_steps);
+      const completed = normalizeStepsCompleted(app.steps_completed, steps.length);
+      const doneCount = completed.filter(Boolean).length;
+      ctx += `- ${app.application_name} (status: ${app.status}, ${doneCount}/${steps.length} steps done)\n`;
+      ctx += `  Steps: ${steps.map((s, i) => `${i + 1}. ${s}`).join(" ")}\n`;
+      const appDocs = docsResult.rows.filter((d) => d.application_name === app.application_name);
+      if (appDocs.length > 0) {
+        ctx += `  Required docs: ${appDocs.map((d) => `${d.document_name}${d.required_flag ? " (required)" : " (optional)"}`).join(", ")}\n`;
+      }
+    }
+  }
+
+  ctx += "\n=== AVAILABLE PROGRAMS ===\n";
+  for (const prog of catalogResult.rows) {
+    ctx += `- ${prog.application_name} | ${prog.category} | ${prog.qualification_summary}\n`;
+  }
+
+  return ctx;
+}
+
+async function buildGuestContext() {
+  const catalogResult = await pool.query(
+    "SELECT application_name, category, qualification_summary FROM applications ORDER BY application_name"
+  );
+  let ctx = "=== GUEST USER (NOT LOGGED IN) ===\n";
+  ctx += "No profile information available. Help them explore programs generally.\n\n";
+  ctx += "=== AVAILABLE PROGRAMS ===\n";
+  for (const prog of catalogResult.rows) {
+    ctx += `- ${prog.application_name} | ${prog.category} | ${prog.qualification_summary}\n`;
+  }
+  return ctx;
+}
+
+async function parseAssistantResponse(rawText, userId) {
+  const actions = [];
+  const profilePrompts = [];
+  const applicationProgress = [];
+
+  const recommendRegex = /\*?\*?\[RECOMMEND:\s*([^\]]+)\]\*?\*?/g;
+  let match;
+  while ((match = recommendRegex.exec(rawText)) !== null) {
+    // Guard against AI combining names: "LIHEAP / Weatherization" → split and handle each
+    const rawNames = match[1].trim();
+    const programNames = rawNames.split(/\s*[\/|&]\s+|\s+and\s+/i).map((n) => n.trim()).filter(Boolean);
+
+    for (const programName of programNames) {
+    const appRow = await pool.query(
+      `SELECT application_id, application_name, category, description, official_url
+       FROM applications WHERE application_name ILIKE $1`,
+      [programName]
+    );
+    if (appRow.rowCount > 0) {
+      const app = appRow.rows[0];
+      let alreadyApplied = false;
+      if (userId) {
+        const uaCheck = await pool.query(
+          `SELECT 1 FROM user_applications
+           WHERE user_id = $1 AND application_id = $2 AND status <> 'terminated'`,
+          [userId, app.application_id]
+        );
+        alreadyApplied = uaCheck.rowCount > 0;
+      }
+      actions.push({
+        type: "program_recommendation",
+        programName: app.application_name,
+        applicationId: app.application_id,
+        category: app.category,
+        description: app.description,
+        officialUrl: app.official_url,
+        alreadyApplied,
+      });
+    }
+    } // end for programNames
+  }
+
+  const askRegex = /\*?\*?\[ASK:\s*([^\]]+)\]\*?\*?/g;
+  while ((match = askRegex.exec(rawText)) !== null) {
+    const fieldName = match[1].trim();
+    const config = PROFILE_FIELD_CONFIG[fieldName];
+    if (config) {
+      profilePrompts.push({
+        field: fieldName,
+        label: config.label,
+        type: config.type,
+        options: config.options,
+      });
+    }
+  }
+
+  if (userId) {
+    const userApps = await pool.query(
+      `SELECT ua.user_application_id, ua.steps_completed,
+              a.application_name, a.application_steps
+       FROM user_applications ua
+       JOIN applications a ON a.application_id = ua.application_id
+       WHERE ua.user_id = $1 AND ua.status NOT IN ('terminated', 'completed')`,
+      [userId]
+    );
+    const textLower = rawText.toLowerCase();
+    for (const ua of userApps.rows) {
+      if (textLower.includes(ua.application_name.toLowerCase())) {
+        const steps = effectiveStepsFromDbStepsText(ua.application_steps);
+        const stepsCompleted = normalizeStepsCompleted(ua.steps_completed, steps.length);
+        applicationProgress.push({
+          userApplicationId: ua.user_application_id,
+          applicationName: ua.application_name,
+          steps,
+          stepsCompleted,
+        });
+      }
+    }
+  }
+
+  const cleanText = rawText
+    .replace(/\*?\*?\[RECOMMEND:\s*[^\]]+\]\*?\*?\n?/g, "")
+    .replace(/\*?\*?\[ASK:\s*[^\]]+\]\*?\*?\n?/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return { cleanText, actions, profilePrompts, applicationProgress };
 }
 
 async function selectUserApplicationDetail(clientId, userApplicationId) {
@@ -444,7 +680,8 @@ app.get("/api/sessions/:sessionId/messages", async (req, res) => {
         session_id,
         sender_type,
         message_text,
-        "timestamp"
+        "timestamp",
+        actions_json
       FROM chat_message
       WHERE session_id = $1
       ORDER BY message_id ASC`,
@@ -475,13 +712,15 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
 
   try {
     const sessionCheck = await pool.query(
-      "SELECT session_id FROM chat_session WHERE session_id = $1",
+      "SELECT session_id, client_id FROM chat_session WHERE session_id = $1",
       [sessionId]
     );
 
     if (sessionCheck.rowCount === 0) {
       return res.status(404).json({ error: "Session not found." });
     }
+
+    const sessionClientId = sessionCheck.rows[0].client_id;
 
     const { rows: userRows } = await pool.query(
       `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp")
@@ -492,8 +731,10 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
     const savedUserMessage = userRows[0];
 
     if (senderType !== "user") {
-      return res.status(201).json({ userMessage: savedUserMessage, assistantMessage: null });
+      return res.status(201).json({ userMessage: savedUserMessage, assistantMessage: null, actions: [], profilePrompts: [] });
     }
+
+    const userContext = await buildUserContext(sessionClientId);
 
     const { rows: historyRows } = await pool.query(
       `SELECT sender_type, message_text FROM chat_message
@@ -501,25 +742,42 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
       [sessionId]
     );
 
-    const chatHistory = historyRows.slice(0, -1).map((row) => ({
-      role: row.sender_type === "user" ? "user" : "model",
-      parts: [{ text: row.message_text }],
-    }));
+    const chatHistory = [];
+
+    if (userContext) {
+      chatHistory.push(
+        { role: "user", parts: [{ text: "What do you know about me and what programs are available?" }] },
+        { role: "model", parts: [{ text: `Here is what I know about you and the programs I can help with:\n\n${userContext}\n\nI'm ready to help you find programs you may qualify for. What would you like to know?` }] }
+      );
+    }
+
+    chatHistory.push(
+      ...historyRows.slice(0, -1).map((row) => ({
+        role: row.sender_type === "user" ? "user" : "model",
+        parts: [{ text: row.message_text }],
+      }))
+    );
 
     const chat = geminiModel.startChat({ history: chatHistory });
     const result = await chat.sendMessage(messageText.trim());
-    const assistantText = result.response.text();
+    const rawAssistantText = result.response.text();
 
+    const { cleanText, actions, profilePrompts, applicationProgress } = await parseAssistantResponse(rawAssistantText, sessionClientId);
+
+    const actionsPayload = { actions, profilePrompts, applicationProgress };
     const { rows: assistantRows } = await pool.query(
-      `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp")
-       VALUES ($1, 'assistant', $2, CURRENT_TIME)
-       RETURNING message_id, session_id, sender_type, message_text, "timestamp"`,
-      [sessionId, assistantText]
+      `INSERT INTO chat_message (session_id, sender_type, message_text, "timestamp", actions_json)
+       VALUES ($1, 'assistant', $2, CURRENT_TIME, $3)
+       RETURNING message_id, session_id, sender_type, message_text, "timestamp", actions_json`,
+      [sessionId, cleanText, JSON.stringify(actionsPayload)]
     );
 
     return res.status(201).json({
       userMessage: savedUserMessage,
       assistantMessage: assistantRows[0],
+      actions,
+      profilePrompts,
+      applicationProgress,
     });
   } catch (err) {
     console.error("Message route error:", err);
@@ -527,7 +785,6 @@ app.post("/api/sessions/:sessionId/messages", async (req, res) => {
   }
 });
 
-// Guest AI chat — no DB writes, just returns AI response
 app.post("/api/chat/guest", async (req, res) => {
   const { messageText, conversationHistory = [] } = req.body;
 
@@ -536,16 +793,24 @@ app.post("/api/chat/guest", async (req, res) => {
   }
 
   try {
-    const chatHistory = conversationHistory.map((msg) => ({
-      role: msg.role === "user" ? "user" : "model",
-      parts: [{ text: msg.content }],
-    }));
+    const guestContext = await buildGuestContext();
+
+    const chatHistory = [
+      { role: "user", parts: [{ text: "What programs are available?" }] },
+      { role: "model", parts: [{ text: `Here is what I can help with:\n\n${guestContext}\n\nI'm ready to help you explore programs. What would you like to know?` }] },
+      ...conversationHistory.map((msg) => ({
+        role: msg.role === "user" ? "user" : "model",
+        parts: [{ text: msg.content }],
+      })),
+    ];
 
     const chat = geminiModel.startChat({ history: chatHistory });
     const result = await chat.sendMessage(messageText.trim());
-    const assistantText = result.response.text();
+    const rawText = result.response.text();
 
-    return res.json({ assistantMessage: assistantText });
+    const { cleanText, actions, profilePrompts } = await parseAssistantResponse(rawText, null);
+
+    return res.json({ assistantMessage: cleanText, actions, profilePrompts });
   } catch (err) {
     console.error("Guest chat error:", err);
     return res.status(500).json({ error: "Failed to get AI response." });
@@ -721,6 +986,36 @@ app.post("/api/profile", async (req, res) => {
     return res.status(201).json({ ok: true, user: rows[0] });
   } catch (err) {
     return res.status(500).json({ error: "Failed to save profile.", details: err.message });
+  }
+});
+
+// Patch a single eligibility field by client ID — used by in-chat ProfilePrompt
+const ALLOWED_PROFILE_FIELDS = new Set([
+  "household_size", "income", "employment_status",
+  "housing_status", "disability_status", "veteran_status",
+]);
+
+app.patch("/api/clients/:clientId/profile-field", async (req, res) => {
+  const clientId = Number.parseInt(req.params.clientId, 10);
+  if (Number.isNaN(clientId)) {
+    return res.status(400).json({ error: "Invalid client ID." });
+  }
+
+  const { field, value } = req.body ?? {};
+  if (!field || !ALLOWED_PROFILE_FIELDS.has(field)) {
+    return res.status(400).json({ error: "Invalid or missing field name." });
+  }
+
+  const coerced = ["household_size", "income"].includes(field) ? Number(value) : String(value);
+
+  try {
+    await pool.query(
+      `UPDATE users SET ${field} = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2`,
+      [coerced, clientId]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to update field.", details: err.message });
   }
 });
 
@@ -972,6 +1267,10 @@ app.delete("/api/clients/:clientId/user-applications/:userApplicationId", async 
     });
   }
 });
+
+// Auto-migrate: add actions_json column if it doesn't exist
+pool.query("ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS actions_json JSONB")
+  .catch((err) => console.warn("actions_json migration skipped:", err.message));
 
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
