@@ -4,8 +4,19 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { User, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { clearStoredUser, getStoredUser } from "@/utils/auth";
 import { getStoredUser, setStoredUser } from "@/utils/auth";
 import type { AuthUser } from "@/utils/auth";
 
@@ -236,6 +247,9 @@ const ProfilePage = () => {
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const isDirty =
     form.householdSize !== initialValues.current.householdSize ||
@@ -308,6 +322,40 @@ const ProfilePage = () => {
       setSaveError("Network error. Is the backend running?");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function confirmDeleteAccount() {
+    if (!clientId) return;
+
+    setDeleteError("");
+    setDeleting(true);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/clients/${clientId}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        let errorMessage = "Failed to delete account. Please try again.";
+        try {
+          const data = await res.json();
+          if (data?.error) errorMessage = data.error;
+        } catch {
+          // Ignore JSON parse failures and keep fallback error message.
+        }
+        setDeleteDialogOpen(false);
+        setDeleteError(errorMessage);
+        return;
+      }
+
+      clearStoredUser();
+      window.location.replace("/");
+    } catch {
+      setDeleteDialogOpen(false);
+      setDeleteError("Network error. Is the backend running?");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -736,6 +784,62 @@ const ProfilePage = () => {
           </div>
         )}
       </section>
+
+      <Card className="border-destructive/40 shadow-sm">
+        <CardContent className="p-6">
+          <h2 className="font-display text-lg font-semibold text-foreground">Delete Account</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Permanently removes all data connected to your account.
+          </p>
+          {deleteError && (
+            <p className="text-sm text-destructive font-medium mt-3" role="alert">
+              {deleteError}
+            </p>
+          )}
+          <div className="pt-4">
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteError("");
+                setDeleteDialogOpen(true);
+              }}
+              disabled={deleting}
+              className="px-6 py-2.5 rounded-full bg-destructive text-destructive-foreground font-headline font-bold text-sm hover:opacity-90 transition-all disabled:opacity-50"
+            >
+              Delete account
+            </button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <AlertDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!deleting) setDeleteDialogOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes your profile, applications, and chat history. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDeleteAccount();
+              }}
+            >
+              {deleting ? "Deleting..." : "Delete account"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
