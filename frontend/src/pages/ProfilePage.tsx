@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -16,6 +17,8 @@ import {
 import { User, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearStoredUser, getStoredUser } from "@/utils/auth";
+import { getStoredUser, setStoredUser } from "@/utils/auth";
+import type { AuthUser } from "@/utils/auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
 
@@ -65,6 +68,11 @@ type ClientProfile = {
   firstName: string | null;
   lastName: string | null;
   email: string;
+  phone: string | null;
+  dateOfBirth: string | null;
+  city: string | null;
+  state: string | null;
+  zipCode: string | null;
   householdSize: number | null;
   income: number | null;
   employmentStatus: string | null;
@@ -72,6 +80,100 @@ type ClientProfile = {
   disabilityStatus: string | null;
   veteranStatus: string | null;
 };
+
+type PersonalFormValues = {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  dateOfBirth: string;
+  city: string;
+  state: string;
+  zipCode: string;
+};
+
+const EMPTY_PERSONAL_FORM: PersonalFormValues = {
+  firstName: "",
+  lastName: "",
+  phone: "",
+  dateOfBirth: "",
+  city: "",
+  state: "",
+  zipCode: "",
+};
+
+function dateOfBirthToInputValue(value: string | null | undefined): string {
+  if (!value) return "";
+  return value.slice(0, 10);
+}
+
+function personalFromClient(profile: ClientProfile): PersonalFormValues {
+  return {
+    firstName: profile.firstName ?? "",
+    lastName: profile.lastName ?? "",
+    phone: profile.phone ?? "",
+    dateOfBirth: dateOfBirthToInputValue(profile.dateOfBirth ?? undefined),
+    city: profile.city ?? "",
+    state: profile.state ?? "",
+    zipCode: profile.zipCode ?? "",
+  };
+}
+
+function getPersonalForSave(clientProfile: ClientProfile | null, user: AuthUser | null): PersonalFormValues {
+  if (clientProfile) return personalFromClient(clientProfile);
+  return {
+    ...EMPTY_PERSONAL_FORM,
+    firstName: user?.firstName ?? "",
+    lastName: user?.lastName ?? "",
+  };
+}
+
+function getAccountEmail(clientProfile: ClientProfile | null, user: AuthUser | null): string {
+  return (clientProfile?.email ?? user?.email ?? "").trim();
+}
+
+/** Eligibility as last loaded from the server. Personal-only saves avoid overwriting DB with draft `form`. */
+function eligibilityFormFromStoredProfile(profile: ClientProfile | null, fallback: FormValues): FormValues {
+  if (!profile) return fallback;
+  return {
+    householdSize: profile.householdSize != null ? String(profile.householdSize) : "",
+    income: profile.income != null ? String(profile.income) : "",
+    employmentStatus: profile.employmentStatus ?? "",
+    housingStatus: profile.housingStatus ?? "",
+    disabilityStatus: profile.disabilityStatus ?? "",
+    veteranStatus: profile.veteranStatus ?? "",
+  };
+}
+
+function eligibilitySnapshotToProfileFields(e: FormValues) {
+  return {
+    householdSize: e.householdSize ? Number(e.householdSize) : null,
+    income: e.income ? Number(e.income) : null,
+    employmentStatus: e.employmentStatus || null,
+    housingStatus: e.housingStatus || null,
+    disabilityStatus: e.disabilityStatus || null,
+    veteranStatus: e.veteranStatus || null,
+  };
+}
+
+function buildProfilePostBody(personal: PersonalFormValues, eligibility: FormValues, accountEmail: string) {
+  const email = accountEmail.trim().toLowerCase();
+  return {
+    first_name: personal.firstName.trim(),
+    last_name: personal.lastName.trim(),
+    email,
+    phone: personal.phone.trim() || null,
+    date_of_birth: personal.dateOfBirth.trim() || null,
+    city: personal.city.trim() || null,
+    state: personal.state.trim() || null,
+    zip_code: personal.zipCode.trim() || null,
+    household_size: eligibility.householdSize ? Number(eligibility.householdSize) : null,
+    income: eligibility.income ? Number(eligibility.income) : null,
+    employment_status: eligibility.employmentStatus || null,
+    housing_status: eligibility.housingStatus || null,
+    disability_status: eligibility.disabilityStatus || null,
+    veteran_status: eligibility.veteranStatus || null,
+  };
+}
 
 type ProfileResponse = {
   client: ClientProfile;
@@ -96,6 +198,9 @@ const formatDate = (dateString: string | null) => {
 const inputClass =
   "w-full h-11 rounded-xl border border-[var(--outline-variant)]/30 bg-[var(--surface-container-low)] px-4 text-on-surface text-sm font-body focus:outline-none focus:ring-2 focus:ring-primary-container/40 transition-all";
 
+const inputReadOnlyClass =
+  "w-full h-11 rounded-xl border border-[var(--outline-variant)]/30 bg-muted/40 px-4 text-on-surface text-sm font-body cursor-not-allowed text-muted-foreground";
+
 type FormValues = {
   householdSize: string;
   income: string;
@@ -119,19 +224,24 @@ const ProfilePage = () => {
   const clientId = user?.clientId;
   const navigate = useNavigate();
 
-  // Redirect to login if not authenticated
   useEffect(() => {
     if (!clientId) {
       navigate("/login", { replace: true });
     }
   }, [clientId, navigate]);
 
-  // Applications
   const [applications, setApplications] = useState<Application[]>([]);
   const [appsLoading, setAppsLoading] = useState(true);
   const [appsError, setAppsError] = useState("");
 
-  // Eligibility form
+  const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
+
+  const [personalEditOpen, setPersonalEditOpen] = useState(false);
+  const [personalForm, setPersonalForm] = useState<PersonalFormValues>(EMPTY_PERSONAL_FORM);
+  const [personalSaveError, setPersonalSaveError] = useState("");
+  const [personalSaving, setPersonalSaving] = useState(false);
+  const [personalSaved, setPersonalSaved] = useState(false);
+
   const [form, setForm] = useState<FormValues>(EMPTY_FORM);
   const initialValues = useRef<FormValues>(EMPTY_FORM);
   const [saveError, setSaveError] = useState("");
@@ -159,6 +269,7 @@ const ProfilePage = () => {
         setApplications(data.applications ?? []);
         const profile = data.client;
         if (profile) {
+          setClientProfile(profile);
           const loaded: FormValues = {
             householdSize: profile.householdSize != null ? String(profile.householdSize) : "",
             income: profile.income != null ? String(profile.income) : "",
@@ -186,25 +297,17 @@ const ProfilePage = () => {
     setSaved(false);
 
     try {
-      if (!user?.email) {
+      const accountEmail = getAccountEmail(clientProfile, user);
+      if (!accountEmail) {
         setSaveError("Please log in before saving your eligibility profile.");
         return;
       }
 
+      const personal = getPersonalForSave(clientProfile, user);
       const res = await fetch(`${API_BASE_URL}/api/profile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          first_name: user?.firstName ?? "",
-          last_name: user?.lastName ?? "",
-          email: user?.email ?? "",
-          household_size: form.householdSize ? Number(form.householdSize) : null,
-          income: form.income ? Number(form.income) : null,
-          employment_status: form.employmentStatus || null,
-          housing_status: form.housingStatus || null,
-          disability_status: form.disabilityStatus || null,
-          veteran_status: form.veteranStatus || null,
-        }),
+        body: JSON.stringify(buildProfilePostBody(personal, form, accountEmail)),
       });
 
       const data = await res.json();
@@ -256,27 +359,281 @@ const ProfilePage = () => {
     }
   }
 
+  function openPersonalEdit() {
+    setPersonalForm(clientProfile ? personalFromClient(clientProfile) : getPersonalForSave(null, user));
+    setPersonalSaveError("");
+    setPersonalEditOpen(true);
+  }
+
+  function closePersonalEdit() {
+    setPersonalEditOpen(false);
+    setPersonalSaveError("");
+  }
+
+  async function handlePersonalSave(e: React.FormEvent) {
+    e.preventDefault();
+    setPersonalSaveError("");
+    setPersonalSaved(false);
+
+    const accountEmail = getAccountEmail(clientProfile, user);
+    if (!accountEmail) {
+      setPersonalSaveError("Could not determine your account email.");
+      return;
+    }
+    if (!personalForm.firstName.trim() || !personalForm.lastName.trim()) {
+      setPersonalSaveError("First and last name are required.");
+      return;
+    }
+    if (!clientId) return;
+
+    setPersonalSaving(true);
+    try {
+      const eligibilityForPost = eligibilityFormFromStoredProfile(clientProfile, form);
+      const res = await fetch(`${API_BASE_URL}/api/profile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildProfilePostBody(personalForm, eligibilityForPost, accountEmail)),
+      });
+
+      const data = (await res.json()) as { error?: string; user?: { user_id: number; first_name: string; last_name: string; email: string } };
+      if (!res.ok) {
+        setPersonalSaveError(data?.error || "Failed to save. Please try again.");
+        return;
+      }
+
+      const row = data.user;
+      if (row && clientId) {
+        setStoredUser({
+          clientId,
+          firstName: row.first_name,
+          lastName: row.last_name,
+          email: row.email,
+        });
+      }
+
+      const phoneVal = personalForm.phone.trim() || null;
+      const dobVal = personalForm.dateOfBirth.trim() || null;
+      const cityVal = personalForm.city.trim() || null;
+      const stateVal = personalForm.state.trim() || null;
+      const zipVal = personalForm.zipCode.trim() || null;
+
+      setClientProfile((prev) => {
+        const eligibilityPersisted = eligibilitySnapshotToProfileFields(eligibilityForPost);
+        if (prev) {
+          return {
+            ...prev,
+            ...eligibilityPersisted,
+            firstName: row?.first_name ?? personalForm.firstName.trim(),
+            lastName: row?.last_name ?? personalForm.lastName.trim(),
+            email: row?.email ?? accountEmail,
+            phone: phoneVal,
+            dateOfBirth: dobVal,
+            city: cityVal,
+            state: stateVal,
+            zipCode: zipVal,
+          };
+        }
+        return {
+          client_id: clientId,
+          firstName: row?.first_name ?? personalForm.firstName.trim(),
+          lastName: row?.last_name ?? personalForm.lastName.trim(),
+          email: row?.email ?? accountEmail,
+          phone: phoneVal,
+          dateOfBirth: dobVal,
+          city: cityVal,
+          state: stateVal,
+          zipCode: zipVal,
+          ...eligibilityPersisted,
+        };
+      });
+
+      setPersonalSaved(true);
+      setTimeout(() => setPersonalSaved(false), 3000);
+    } catch {
+      setPersonalSaveError("Network error. Is the backend running?");
+    } finally {
+      setPersonalSaving(false);
+    }
+  }
+
+  const displayName =
+    (clientProfile
+      ? `${clientProfile.firstName ?? ""} ${clientProfile.lastName ?? ""}`.trim()
+      : user
+        ? `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim()
+        : "") || "Your Profile";
+  const displayEmail = clientProfile?.email ?? user?.email ?? "";
+  const personalPanelEmail = displayEmail;
+
   return (
     <div className="flex-1 flex flex-col px-5 py-6 gap-6 max-w-3xl mx-auto w-full">
 
       {/* User Info */}
       <Card className="border-border shadow-sm">
-        <CardContent className="p-6 flex items-center gap-4">
-          <Avatar className="w-16 h-16 bg-primary/10 shrink-0">
-            <AvatarFallback className="bg-primary/10 text-primary">
-              <User className="w-8 h-8" />
-            </AvatarFallback>
-          </Avatar>
-          <div className="min-w-0">
-            <h1 className="font-display text-2xl sm:text-3xl font-bold text-foreground leading-tight">
-              {user ? `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || "Your Profile" : "Your Profile"}
-            </h1>
-            {user?.email && (
-              <div className="flex items-center gap-2 mt-2 text-sm sm:text-base text-muted-foreground">
-                <Mail className="w-4 h-4" />
-                <span className="truncate">{user.email}</span>
+        <CardContent className="p-6">
+          <div className="flex gap-4 items-start">
+            <Avatar className="w-16 h-16 bg-primary/10 shrink-0">
+              <AvatarFallback className="bg-primary/10 text-primary">
+                <User className="w-8 h-8" />
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex-1 min-w-0 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h1 className="font-display text-2xl sm:text-3xl font-bold text-foreground leading-tight">
+                    {displayName}
+                  </h1>
+                  {displayEmail && (
+                    <div className="flex items-center gap-2 mt-2 text-sm sm:text-base text-muted-foreground">
+                      <Mail className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{displayEmail}</span>
+                    </div>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => (personalEditOpen ? closePersonalEdit() : openPersonalEdit())}
+                >
+                  {personalEditOpen ? "Close" : "Edit"}
+                </Button>
               </div>
-            )}
+
+              {personalEditOpen && (
+                <Card className="border-border shadow-sm">
+                  <CardContent className="p-6">
+                    <h2 className="font-display text-base font-semibold text-foreground mb-4">Personal information</h2>
+                    <form onSubmit={handlePersonalSave} className="space-y-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-first-name">
+                            First name
+                          </label>
+                          <input
+                            id="profile-first-name"
+                            value={personalForm.firstName}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, firstName: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="given-name"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-last-name">
+                            Last name
+                          </label>
+                          <input
+                            id="profile-last-name"
+                            value={personalForm.lastName}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, lastName: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="family-name"
+                          />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-email-readonly">
+                            Email
+                          </label>
+                          <input
+                            id="profile-email-readonly"
+                            type="email"
+                            readOnly
+                            aria-readonly="true"
+                            title="Email cannot be changed here. Contact support if you need to update your sign-in email."
+                            value={personalPanelEmail}
+                            className={inputReadOnlyClass}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            This is the email for your account. It cannot be edited on this page.
+                          </p>
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-phone">
+                            Phone
+                          </label>
+                          <input
+                            id="profile-phone"
+                            type="tel"
+                            value={personalForm.phone}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, phone: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="tel"
+                          />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-dob">
+                            Date of birth
+                          </label>
+                          <input
+                            id="profile-dob"
+                            type="date"
+                            value={personalForm.dateOfBirth}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, dateOfBirth: e.target.value }))}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div className="space-y-1.5 sm:col-span-2">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-city">
+                            City
+                          </label>
+                          <input
+                            id="profile-city"
+                            value={personalForm.city}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, city: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="address-level2"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-state">
+                            State
+                          </label>
+                          <input
+                            id="profile-state"
+                            value={personalForm.state}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, state: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="address-level1"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-sm font-semibold text-foreground" htmlFor="profile-zip">
+                            ZIP code
+                          </label>
+                          <input
+                            id="profile-zip"
+                            value={personalForm.zipCode}
+                            onChange={(e) => setPersonalForm((f) => ({ ...f, zipCode: e.target.value }))}
+                            className={inputClass}
+                            autoComplete="postal-code"
+                          />
+                        </div>
+                      </div>
+
+                      {personalSaveError && (
+                        <p className="text-sm text-destructive font-medium" role="alert">
+                          {personalSaveError}
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-3 pt-1">
+                        <button
+                          type="submit"
+                          disabled={personalSaving}
+                          className="px-6 py-2.5 rounded-full bg-primary text-[var(--on-primary)] font-headline font-bold text-sm hover:bg-primary-dim transition-all disabled:opacity-50"
+                        >
+                          {personalSaving ? "Saving..." : "Save"}
+                        </button>
+                        {personalSaved && (
+                          <span className="text-sm text-green-600 font-medium">Saved!</span>
+                        )}
+                      </div>
+                    </form>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
