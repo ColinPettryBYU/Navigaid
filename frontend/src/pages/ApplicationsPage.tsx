@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -97,6 +97,25 @@ const ApplicationsPage = () => {
   const [deleteTarget, setDeleteTarget] = useState<UserApplicationDetail | null>(null);
   const [completingId, setCompletingId] = useState<number | null>(null);
 
+  const okrFetchSeq = useRef(0);
+  const fetchOkrMetrics = useCallback(async () => {
+    const seq = ++okrFetchSeq.current;
+    try {
+      const metricsRes = await fetch(`${API_BASE_URL}/api/metrics/okr`);
+      if (!metricsRes.ok) {
+        if (seq === okrFetchSeq.current) setOkrMetrics(null);
+        return;
+      }
+      const metricsJson = (await metricsRes.json()) as OkrMetrics;
+      if (seq === okrFetchSeq.current) {
+        setOkrMetrics(metricsJson);
+      }
+    } catch {
+      // Swallow errors: we don't want OKR failures to block the page.
+      if (seq === okrFetchSeq.current) setOkrMetrics(null);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoadError("");
     setLoading(true);
@@ -106,13 +125,7 @@ const ApplicationsPage = () => {
       const catJson = (await catRes.json()) as CatalogApplication[];
       setCatalog(catJson);
 
-      const metricsRes = await fetch(`${API_BASE_URL}/api/metrics/okr`);
-      if (metricsRes.ok) {
-        const metricsJson = (await metricsRes.json()) as OkrMetrics;
-        setOkrMetrics(metricsJson);
-      } else {
-        setOkrMetrics(null);
-      }
+      await fetchOkrMetrics();
 
       if (clientId) {
         const listRes = await fetch(`${API_BASE_URL}/api/clients/${clientId}/user-applications`);
@@ -172,6 +185,7 @@ const ApplicationsPage = () => {
       setUserApps((prev) => [created, ...prev.filter((p) => p.userApplicationId !== created.userApplicationId)]);
       setOpenCards((prev) => ({ ...prev, [created.userApplicationId]: true }));
       toast.success(`${created.applicationName} added to your list.`);
+      void fetchOkrMetrics();
     } catch {
       toast.error("Network error. Is the backend running?");
     }
@@ -228,6 +242,7 @@ const ApplicationsPage = () => {
       const updated = data as UserApplicationDetail;
       setUserApps((prev) => prev.map((p) => (p.userApplicationId === updated.userApplicationId ? updated : p)));
       toast.success("Application marked complete.");
+      void fetchOkrMetrics();
     } catch {
       toast.error("Network error.");
     } finally {
@@ -250,6 +265,7 @@ const ApplicationsPage = () => {
       setUserApps((prev) => prev.filter((p) => p.userApplicationId !== id));
       setDeleteTarget(null);
       toast.success("Application removed from your list.");
+      void fetchOkrMetrics();
     } catch {
       toast.error("Network error.");
     }
