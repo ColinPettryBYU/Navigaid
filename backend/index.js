@@ -1333,6 +1333,49 @@ app.delete("/api/clients/:clientId/user-applications/:userApplicationId", async 
   }
 });
 
+app.get("/api/metrics/okr", async (req, res) => {
+  const { startDate, endDate } = req.query ?? {};
+
+  const params = [];
+  const whereClausesRoot = ["status <> 'terminated'"];
+
+  if (startDate) {
+    params.push(startDate);
+    whereClausesRoot.push(`date_started >= $${params.length}`);
+  }
+  if (endDate) {
+    params.push(endDate);
+    whereClausesRoot.push(`date_started <= $${params.length}`);
+  }
+
+  const whereRootSql = whereClausesRoot.length > 0 ? `WHERE ${whereClausesRoot.join(" AND ")}` : "";
+
+  try {
+    const metricsResult = await pool.query(
+      `
+        SELECT
+          COUNT(*) AS total_started,
+          COALESCE(AVG(CASE WHEN status = 'completed' THEN 1.0 ELSE 0.0 END), 0) AS completion_rate
+        FROM user_applications
+        ${whereRootSql}
+      `,
+      params,
+    );
+
+    const row = metricsResult.rows[0] ?? {};
+
+    return res.json({
+      totalStarted: Number(row.total_started) || 0,
+      completionRate: Number(row.completion_rate) || 0,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: "Failed to load OKR metrics.",
+      details: err.message,
+    });
+  }
+});
+
 // Auto-migrate: add actions_json column if it doesn't exist
 pool.query("ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS actions_json JSONB")
   .catch((err) => console.warn("actions_json migration skipped:", err.message));
