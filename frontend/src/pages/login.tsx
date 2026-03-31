@@ -100,7 +100,7 @@ export default function Login() {
 
       navigate("/results");
     } catch {
-      setError("Network error. Is the backend running?");
+      setError("Network error");
     } finally {
       setLoading(false);
     }
