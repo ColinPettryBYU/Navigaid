@@ -989,6 +989,66 @@ app.post("/api/profile", async (req, res) => {
   }
 });
 
+async function pgTableExists(client, tableName) {
+  const { rows } = await client.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1 LIMIT 1`,
+    [tableName]
+  );
+  return rows.length > 0;
+}
+
+app.delete("/api/clients/:clientId", async (req, res) => {
+  const clientId = Number.parseInt(req.params.clientId, 10);
+
+  if (Number.isNaN(clientId)) {
+    return res.status(400).json({ error: "Invalid client ID." });
+  }
+
+  const dbClient = await pool.connect();
+  try {
+    await dbClient.query("BEGIN");
+
+    // App chat (chat_session / chat_message) — only if tables exist (schema varies by environment).
+    if ((await pgTableExists(dbClient, "chat_message")) && (await pgTableExists(dbClient, "chat_session"))) {
+      await dbClient.query(
+        `DELETE FROM chat_message
+         WHERE session_id IN (SELECT session_id FROM chat_session WHERE client_id = $1)`,
+        [clientId]
+      );
+      await dbClient.query("DELETE FROM chat_session WHERE client_id = $1", [clientId]);
+    } else if (await pgTableExists(dbClient, "chat_session")) {
+      await dbClient.query("DELETE FROM chat_session WHERE client_id = $1", [clientId]);
+    }
+
+    // Legacy seed schema (chat_threads / chat_messages) — must be removed or DELETE FROM users fails on FK.
+    if ((await pgTableExists(dbClient, "chat_messages")) && (await pgTableExists(dbClient, "chat_threads"))) {
+      await dbClient.query(
+        `DELETE FROM chat_messages
+         WHERE thread_id IN (SELECT thread_id FROM chat_threads WHERE user_id = $1)`,
+        [clientId]
+      );
+      await dbClient.query("DELETE FROM chat_threads WHERE user_id = $1", [clientId]);
+    }
+
+    await dbClient.query("DELETE FROM user_applications WHERE user_id = $1", [clientId]);
+    await dbClient.query("DELETE FROM login WHERE user_id = $1", [clientId]);
+    const deleteUserResult = await dbClient.query("DELETE FROM users WHERE user_id = $1", [clientId]);
+
+    if (deleteUserResult.rowCount === 0) {
+      await dbClient.query("ROLLBACK");
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    await dbClient.query("COMMIT");
+    return res.status(204).send();
+  } catch (err) {
+    await dbClient.query("ROLLBACK").catch(() => {});
+    return res.status(500).json({ error: "Failed to delete account.", details: err.message });
+  } finally {
+    dbClient.release();
+  }
+});
+
 // Patch a single eligibility field by client ID — used by in-chat ProfilePrompt
 const ALLOWED_PROFILE_FIELDS = new Set([
   "household_size", "income", "employment_status",
