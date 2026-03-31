@@ -16,8 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { User, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { clearStoredUser, getStoredUser } from "@/utils/auth";
-import { getStoredUser, setStoredUser } from "@/utils/auth";
+import { clearStoredUser, getStoredUser, setStoredUser } from "@/utils/auth";
 import type { AuthUser } from "@/utils/auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";

@@ -2,6 +2,8 @@ import { Link, useLocation } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { useState } from "react";
 import logo from "@/assets/Logo.png";
+import LogoutButton from "@/components/layout/LogoutButton";
+import { getStoredUser } from "@/utils/auth";
 
 const navLinks = [
   { to: "/", label: "Home" },
@@ -15,6 +17,7 @@ const navLinks = [
 const TopNavBar = () => {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const user = getStoredUser(); // ✅ added
 
   return (
     <nav className="fixed top-0 w-full z-50 flex justify-between items-center px-6 md:px-12 h-20 bg-white/80 backdrop-blur-xl shadow-editorial">
@@ -39,19 +42,26 @@ const TopNavBar = () => {
         ))}
       </div>
 
+      {/* ✅ UPDATED SECTION */}
       <div className="flex items-center space-x-4">
-        <Link
-          to="/signup"
-          className="hidden md:inline-flex items-center px-5 py-2 rounded-full border border-primary/20 text-primary font-headline font-bold text-sm hover:bg-primary/5 transition-all"
-        >
-          Sign Up
-        </Link>
-        <Link
-          to="/login"
-          className="hidden md:inline-flex items-center px-5 py-2 rounded-full bg-primary text-[var(--on-primary)] font-headline font-bold text-sm hover:bg-primary-dim transition-all"
-        >
-          Login
-        </Link>
+        {user ? (
+          <LogoutButton />
+        ) : (
+          <>
+            <Link
+              to="/signup"
+              className="hidden md:inline-flex items-center px-5 py-2 rounded-full border border-primary/20 text-primary font-headline font-bold text-sm hover:bg-primary/5 transition-all"
+            >
+              Sign Up
+            </Link>
+            <Link
+              to="/login"
+              className="hidden md:inline-flex items-center px-5 py-2 rounded-full bg-primary text-[var(--on-primary)] font-headline font-bold text-sm hover:bg-primary-dim transition-all"
+            >
+              Login
+            </Link>
+          </>
+        )}
 
         <button
           className="md:hidden p-2 text-slate-500 hover:text-blue-600 transition-colors"
@@ -79,6 +89,12 @@ const TopNavBar = () => {
                 {link.label}
               </Link>
             ))}
+            {user ? (
+  <div className="px-4 py-3">
+    <LogoutButton />
+  </div>
+) : (
+<>
             <Link
               to="/login"
               onClick={() => setMobileOpen(false)}
@@ -93,6 +109,8 @@ const TopNavBar = () => {
             >
               Sign Up
             </Link>
+          </>
+        )}
           </div>
         </div>
       )}

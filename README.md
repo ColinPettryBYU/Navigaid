@@ -16,6 +16,7 @@ This iteration introduces a backend service and persistent data layer, transform
 - **Guest-to-account migration** — When a guest creates an account, all local conversations are automatically migrated to their new database account
 - **Eligibility profile** — Authenticated users can save household size, income, employment, housing, disability, and veteran status; the save button only appears when a field has changed
 - **Informational pages** — Fully themed Privacy Policy, Terms of Service, Accessibility statement, and Contact/FAQ pages accessible from the footer
+- **Logout functionality** — Authenticated users can securely log out, which clears their session from localStorage and redirects them to the login page.
 
 ## EARS Requirements
 **Complete**
