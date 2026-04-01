@@ -68,6 +68,7 @@ CREATE TABLE user_applications (
     last_updated          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     notes                 TEXT,
     steps_completed       JSONB NOT NULL DEFAULT '[]',
+    prior_status          VARCHAR(50) NULL,
     CONSTRAINT fk_user_applications_user
         FOREIGN KEY (user_id)
         REFERENCES users(user_id)
