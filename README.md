@@ -16,6 +16,12 @@ This iteration introduces a backend service and persistent data layer, transform
 - **Guest-to-account migration** — When a guest creates an account, all local conversations are automatically migrated to their new database account
 - **Eligibility profile** — Authenticated users can save household size, income, employment, housing, disability, and veteran status; the save button only appears when a field has changed
 - **Informational pages** — Fully themed Privacy Policy, Terms of Service, Accessibility statement, and Contact/FAQ pages accessible from the footer
+- **Logout functionality** — Authenticated users can securely log out, which clears their session from localStorage and redirects them to the login page.
+- **Cross-page chat entry points** — The chat (`/results`) is reachable from multiple pages: the home page search bar and "Smart Match" button, the Benefits Guide "Chat with our AI" button, the Contact page "Open Chat" button, and the top navigation bar.
+- **Program cards in chat** — When the AI recommends an aid program, a structured program card appears inline. Users can click "Add to Applications" to save that program to their applications list (POST to the API), "Learn More" to ask the AI a follow-up question about it, or visit the program's official site directly.
+- **Application progress in chat** — If the user has added an application, a step-progress card is rendered inside the chat showing the required steps. Users can check off individual steps as they complete them; each toggle is saved immediately to the database.
+- **Profile prompts in chat** — The AI can trigger inline form prompts (dropdowns, number inputs) to collect or update profile fields (income, household size, employment status, etc.) without leaving the chat.
+- **Context-aware AI responses** — For authenticated users the backend builds a rich context object (added applications + progress, profile data, full program catalog, required documents) and passes it to Gemini so answers are personalized to the user's situation.
 
 ## EARS Requirements
 **Complete**
