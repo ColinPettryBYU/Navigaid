@@ -522,6 +522,16 @@ const BenefitsGuidePage = () => {
     });
   }, [search, activeCategory]);
 
+  const leftColumnPrograms = useMemo(
+    () => filtered.filter((_, i) => i % 2 === 0),
+    [filtered]
+  );
+
+  const rightColumnPrograms = useMemo(
+    () => filtered.filter((_, i) => i % 2 === 1),
+    [filtered]
+  );
+
   return (
     <div className="bg-surface min-h-screen">
       {/* ── Hero ── */}
@@ -616,11 +626,27 @@ const BenefitsGuidePage = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {filtered.map((program) => (
-              <ProgramCard key={program.id} program={program} />
-            ))}
-          </div>
+          <>
+            <div className="md:hidden space-y-5">
+              {filtered.map((program) => (
+                <ProgramCard key={program.id} program={program} />
+              ))}
+            </div>
+
+            <div className="hidden md:grid md:grid-cols-2 gap-5 items-start">
+              <div className="space-y-5">
+                {leftColumnPrograms.map((program) => (
+                  <ProgramCard key={program.id} program={program} />
+                ))}
+              </div>
+
+              <div className="space-y-5">
+                {rightColumnPrograms.map((program) => (
+                  <ProgramCard key={program.id} program={program} />
+                ))}
+              </div>
+            </div>
+          </>
         )}
       </div>
 
