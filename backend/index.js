@@ -1315,7 +1315,9 @@ app.delete("/api/clients/:clientId/user-applications/:userApplicationId", async 
   try {
     const { rowCount } = await pool.query(
       `UPDATE user_applications
-       SET status = 'terminated', last_updated = CURRENT_TIMESTAMP
+       SET prior_status = COALESCE(prior_status, status),
+           status = 'terminated',
+           last_updated = CURRENT_TIMESTAMP
        WHERE user_application_id = $1 AND user_id = $2`,
       [userApplicationId, clientId]
     );
@@ -1355,7 +1357,12 @@ app.get("/api/metrics/okr", async (req, res) => {
       `
         SELECT
           COUNT(*) AS total_started,
-          COALESCE(AVG(CASE WHEN status = 'completed' THEN 1.0 ELSE 0.0 END), 0) AS completion_rate
+          COALESCE(AVG(CASE
+            WHEN status = 'completed'
+              OR (status = 'terminated' AND prior_status = 'completed')
+            THEN 1.0
+            ELSE 0.0
+          END), 0) AS completion_rate
         FROM user_applications
         ${whereRootSql}
       `,
