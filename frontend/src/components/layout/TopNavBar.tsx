@@ -20,9 +20,12 @@ const TopNavBar = () => {
 
   return (
     <nav className="fixed top-0 w-full z-50 flex justify-between items-center px-6 md:px-12 h-20 bg-white/80 backdrop-blur-xl shadow-editorial">
-      <Link to="/" className="flex items-center gap-2.5 text-xl font-extrabold text-blue-900 font-headline tracking-tight">
+      <Link to="/" className="flex items-center gap-2.5 text-xl font-extrabold font-headline tracking-tight">
         <img src={logo} alt="NavigAid" className="w-8 h-8 rounded-lg object-contain" />
-        <span>Navig<span className="text-primary">Aid</span></span>
+        <span>
+          <span className="text-primary-container">Navig</span>
+          <span className="text-primary">Aid</span>
+        </span>
       </Link>
 
       <div className="hidden md:flex items-center space-x-8">
