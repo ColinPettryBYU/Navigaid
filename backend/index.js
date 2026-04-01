@@ -1337,7 +1337,7 @@ app.get("/api/metrics/okr", async (req, res) => {
   const { startDate, endDate } = req.query ?? {};
 
   const params = [];
-  const whereClausesRoot = ["status <> 'terminated'"];
+  const whereClausesRoot = [];
 
   if (startDate) {
     params.push(startDate);
