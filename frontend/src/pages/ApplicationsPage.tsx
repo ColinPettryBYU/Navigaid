@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ExternalLink, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -56,11 +56,6 @@ type UserApplicationDetail = {
   stepsCompleted: boolean[];
 };
 
-type OkrMetrics = {
-  totalStarted: number;
-  completionRate: number;
-};
-
 function progressValue(stepsCompleted: boolean[]): number {
   if (stepsCompleted.length === 0) return 0;
   const done = stepsCompleted.filter(Boolean).length;
@@ -89,32 +84,12 @@ const ApplicationsPage = () => {
 
   const [catalog, setCatalog] = useState<CatalogApplication[]>([]);
   const [userApps, setUserApps] = useState<UserApplicationDetail[]>([]);
-  const [okrMetrics, setOkrMetrics] = useState<OkrMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
 
   const [openCards, setOpenCards] = useState<Record<number, boolean>>({});
   const [deleteTarget, setDeleteTarget] = useState<UserApplicationDetail | null>(null);
   const [completingId, setCompletingId] = useState<number | null>(null);
-
-  const okrFetchSeq = useRef(0);
-  const fetchOkrMetrics = useCallback(async () => {
-    const seq = ++okrFetchSeq.current;
-    try {
-      const metricsRes = await fetch(`${API_BASE_URL}/api/metrics/okr`);
-      if (!metricsRes.ok) {
-        if (seq === okrFetchSeq.current) setOkrMetrics(null);
-        return;
-      }
-      const metricsJson = (await metricsRes.json()) as OkrMetrics;
-      if (seq === okrFetchSeq.current) {
-        setOkrMetrics(metricsJson);
-      }
-    } catch {
-      // Swallow errors: we don't want OKR failures to block the page.
-      if (seq === okrFetchSeq.current) setOkrMetrics(null);
-    }
-  }, []);
 
   const loadData = useCallback(async () => {
     setLoadError("");
@@ -124,8 +99,6 @@ const ApplicationsPage = () => {
       if (!catRes.ok) throw new Error("Could not load application types.");
       const catJson = (await catRes.json()) as CatalogApplication[];
       setCatalog(catJson);
-
-      await fetchOkrMetrics();
 
       if (clientId) {
         const listRes = await fetch(`${API_BASE_URL}/api/clients/${clientId}/user-applications`);
@@ -185,7 +158,6 @@ const ApplicationsPage = () => {
       setUserApps((prev) => [created, ...prev.filter((p) => p.userApplicationId !== created.userApplicationId)]);
       setOpenCards((prev) => ({ ...prev, [created.userApplicationId]: true }));
       toast.success(`${created.applicationName} added to your list.`);
-      void fetchOkrMetrics();
     } catch {
       toast.error("Network error. Is the backend running?");
     }
@@ -242,7 +214,6 @@ const ApplicationsPage = () => {
       const updated = data as UserApplicationDetail;
       setUserApps((prev) => prev.map((p) => (p.userApplicationId === updated.userApplicationId ? updated : p)));
       toast.success("Application marked complete.");
-      void fetchOkrMetrics();
     } catch {
       toast.error("Network error.");
     } finally {
@@ -265,7 +236,6 @@ const ApplicationsPage = () => {
       setUserApps((prev) => prev.filter((p) => p.userApplicationId !== id));
       setDeleteTarget(null);
       toast.success("Application removed from your list.");
-      void fetchOkrMetrics();
     } catch {
       toast.error("Network error.");
     }
@@ -314,33 +284,6 @@ const ApplicationsPage = () => {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-
-      {!loading && okrMetrics && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Card className="border-border shadow-sm">
-              <CardContent className="py-4 px-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-1">
-                  Total applications started
-                </p>
-                <p className="text-2xl font-extrabold text-blue-900 font-headline">
-                  {okrMetrics.totalStarted}
-                </p>
-              </CardContent>
-            </Card>
-            <Card className="border-border shadow-sm">
-              <CardContent className="py-4 px-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-1">
-                  Completion rate
-                </p>
-                <p className="text-2xl font-extrabold text-blue-900 font-headline">
-                  {`${(okrMetrics.completionRate * 100).toFixed(1)}%`}
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      )}
 
       {loadError && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{loadError}</div>

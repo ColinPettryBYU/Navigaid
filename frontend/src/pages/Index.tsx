@@ -1,10 +1,38 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001";
+
+type OkrMetrics = {
+  totalStarted: number;
+  completionRate: number;
+};
 
 const Index = () => {
   const [message, setMessage] = useState("");
   const [searchError, setSearchError] = useState("");
+  const [okrMetrics, setOkrMetrics] = useState<OkrMetrics | null>(null);
   const navigate = useNavigate();
+
+  const okrFetchSeq = useRef(0);
+  const fetchOkrMetrics = useCallback(async () => {
+    const seq = ++okrFetchSeq.current;
+    try {
+      const metricsRes = await fetch(`${API_BASE_URL}/api/metrics/okr`);
+      if (!metricsRes.ok) {
+        if (seq === okrFetchSeq.current) setOkrMetrics(null);
+        return;
+      }
+      const metricsJson = (await metricsRes.json()) as OkrMetrics;
+      if (seq === okrFetchSeq.current) setOkrMetrics(metricsJson);
+    } catch {
+      if (seq === okrFetchSeq.current) setOkrMetrics(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchOkrMetrics();
+  }, [fetchOkrMetrics]);
 
   const handleSubmit = () => {
     const trimmed = message.trim();
@@ -110,6 +138,38 @@ const Index = () => {
           </svg>
         </div>
       </section>
+
+      {okrMetrics && (
+        <section className="max-w-7xl w-full mx-auto px-6 z-10 relative mb-10" aria-label="Application success metrics">
+          <p className="text-xs font-label font-bold tracking-widest uppercase text-on-surface-variant mb-4 text-center">
+            Platform impact
+          </p>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-6 sm:gap-10 w-full">
+            <div
+              className="w-full max-w-[10rem] aspect-square rounded-full border border-[var(--outline-variant)]/15 bg-[var(--surface-container-lowest)] shadow-sm flex flex-col items-center justify-center text-center px-4 py-3"
+              aria-label={`Total applications started: ${okrMetrics.totalStarted}`}
+            >
+              <p className="text-[0.65rem] sm:text-xs uppercase tracking-wide text-on-surface-variant font-semibold mb-1.5 font-label leading-tight max-w-[9rem]">
+                Applications started
+              </p>
+              <p className="text-2xl font-extrabold text-on-surface font-headline tabular-nums">
+                {okrMetrics.totalStarted}
+              </p>
+            </div>
+            <div
+              className="w-full max-w-[10rem] aspect-square rounded-full border border-[var(--outline-variant)]/15 bg-[var(--surface-container-lowest)] shadow-sm flex flex-col items-center justify-center text-center px-4 py-3"
+              aria-label={`Completion rate: ${(okrMetrics.completionRate * 100).toFixed(1)} percent`}
+            >
+              <p className="text-[0.65rem] sm:text-xs uppercase tracking-wide text-on-surface-variant font-semibold mb-1.5 font-label leading-tight">
+                Completion rate
+              </p>
+              <p className="text-2xl font-extrabold text-on-surface font-headline tabular-nums">
+                {(okrMetrics.completionRate * 100).toFixed(1)}%
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Smart Match Card */}
       <section className="max-w-7xl w-full mx-auto px-6 -mt-0 z-10 relative mb-24">
