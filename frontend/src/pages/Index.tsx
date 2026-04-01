@@ -7,6 +7,33 @@ type OkrMetrics = {
   totalStarted: number;
   completionRate: number;
 };
+/** Matches cards in Benefits Guide (Medicaid, SNAP, Housing) for home featured section. */
+const FEATURED_PROGRAMS = [
+  {
+    icon: "health_and_safety",
+    title: "Medicaid / CHIP",
+    desc: "Provides free or low-cost health coverage for eligible adults, children, pregnant people, seniors, and people with disabilities. Eligibility rules vary by state. The same intake may screen for Medicaid, CHIP, and Marketplace options.",
+    tag: "Health",
+    programName: "Medicaid & CHIP",
+    shortName: "Medicaid / CHIP",
+  },
+  {
+    icon: "grocery",
+    title: "SNAP",
+    desc: "Helps eligible households with low income buy food. Federally funded but administered by each state, so exact forms, interviews, and submission methods vary.",
+    tag: "Food",
+    programName: "Supplemental Nutrition Assistance Program",
+    shortName: "SNAP",
+  },
+  {
+    icon: "home",
+    title: "Housing",
+    desc: "Includes Housing Choice Vouchers (Section 8), public housing, and subsidized rental housing. Usually managed locally through public housing agencies or participating properties. Waiting lists are common.",
+    tag: "Housing",
+    programName: "Housing Assistance",
+    shortName: "Housing",
+  },
+] as const;
 
 const Index = () => {
   const [message, setMessage] = useState("");
@@ -209,7 +236,7 @@ const Index = () => {
               </p>
             </div>
             <button
-              onClick={() => navigate("/situations")}
+              onClick={() => navigate("/benefits")}
               className="text-primary font-bold flex items-center gap-2 hover:underline"
             >
               View all categories <span className="material-symbols-outlined">chevron_right</span>
@@ -217,26 +244,7 @@ const Index = () => {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {[
-              {
-                icon: "medical_services",
-                title: "Community Health Grant",
-                desc: "Direct financial support for specialized treatments and rehabilitation services for low-income families.",
-                tag: "Verified",
-              },
-              {
-                icon: "school",
-                title: "Edu-Future Scholarship",
-                desc: "Vocational training and university subsidies for students pursuing careers in sustainable technologies.",
-                tag: "Fast-Track",
-              },
-              {
-                icon: "home_repair_service",
-                title: "Housing Stability Fund",
-                desc: "Temporary housing assistance and renovation grants for areas affected by recent climate events.",
-                tag: "Active Relief",
-              },
-            ].map((card) => (
+            {FEATURED_PROGRAMS.map((card) => (
               <div
                 key={card.title}
                 className="bg-[var(--surface-container-lowest)] rounded-xl p-8 border border-[var(--outline-variant)]/10 hover:shadow-editorial-hover transition-shadow group"
@@ -253,15 +261,22 @@ const Index = () => {
                 <p className="text-on-surface-variant text-sm mb-6 leading-relaxed font-body">
                   {card.desc}
                 </p>
-                <div className="flex items-center justify-between pt-6 border-t border-[var(--outline-variant)]/5">
-                  <span className="text-xs font-bold text-[var(--outline)] uppercase tracking-wider">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-6 border-t border-[var(--outline-variant)]/5">
+                  <span className="text-xs font-bold text-[var(--outline)] uppercase tracking-wider shrink-0">
                     {card.tag}
                   </span>
                   <button
-                    onClick={() => navigate("/situations")}
-                    className="text-primary text-sm font-bold"
+                    type="button"
+                    onClick={() =>
+                      navigate("/results", {
+                        state: {
+                          initialMessage: `Tell me more about ${card.programName} and whether I might qualify.`,
+                        },
+                      })
+                    }
+                    className="text-primary text-sm font-bold text-left sm:text-right hover:underline"
                   >
-                    Apply Now
+                    Ask our AI about {card.shortName}
                   </button>
                 </div>
               </div>
